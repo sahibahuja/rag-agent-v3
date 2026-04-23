@@ -66,11 +66,19 @@ class GraphState(TypedDict):
     no_context_fallback: NotRequired[bool]
 
 class SupervisorRoute(BaseModel):
-    next_active_agent: Literal["document_agent", "conversational_agent"] = Field(
-        description="Choose 'document_agent' for PDF/fact/context questions, "
-                    "or 'conversational_agent' for greetings/chitchat/memory."
+    next_active_agent: Literal["document_agent", "conversational_agent"]
+    needs_external_context: bool = Field(
+        description="True if answering requires retrieved/indexed context."
     )
-    reason: str = Field(default="", description="Short reason for routing decision")
+    is_followup: bool = Field(
+        default=False,
+        description="True if current turn depends on prior turns."
+    )
+    confidence: float = Field(
+        default=0.0,
+        description="Routing confidence between 0.0 and 1.0."
+    )
+    reason: str = Field(default="")
 
 class CondensedQuery(BaseModel):
     standalone_query: str = Field(

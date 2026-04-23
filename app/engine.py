@@ -8,6 +8,33 @@ from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.datamodel.accelerator_options import AcceleratorOptions 
 from docling.datamodel.base_models import InputFormat
 from app.database import get_client, COLLECTION_NAME
+from sentence_transformers import CrossEncoder
+
+
+_reranker = None
+
+def get_reranker() -> CrossEncoder:
+    global _reranker
+    if _reranker is None:
+        _reranker = CrossEncoder("BAAI/bge-reranker-base")
+    return _reranker
+
+def rerank_results(query: str, results: list, top_k: int = 4):
+    if not results:
+        return []
+
+    try:
+        reranker = get_reranker()
+        pairs = [(query, r.document or "") for r in results]
+        scores = reranker.predict(pairs)
+
+        scored = list(zip(results, scores))
+        scored.sort(key=lambda x: float(x[1]), reverse=True)
+
+        return [item[0] for item in scored[:top_k]]
+    except Exception as e:
+        print(f"⚠️ Reranker failed, using original order: {e}")
+        return results[:top_k]
 
 def process_file(file_path: str, metadata: dict) -> int:
     file_ext = os.path.splitext(file_path)[1].lower()
@@ -72,13 +99,10 @@ def process_file(file_path: str, metadata: dict) -> int:
 
 # --- 2. Retrieval Logic (The "Search Engine") ---
 
-def get_context_from_qdrant(queries: List[str], limit: int = 8) -> Tuple[str, List[str]]:
-    """
-    Refactored Retrieval: Executes Multi-Query search and deduplicates results.
-    """
+def get_context_from_qdrant(queries: List[str], limit: int = 10) -> Tuple[str, List[str]]:
     q_client = get_client()
     all_results = []
-    
+
     for q in queries:
         res = q_client.query(
             collection_name=COLLECTION_NAME,
@@ -86,25 +110,28 @@ def get_context_from_qdrant(queries: List[str], limit: int = 8) -> Tuple[str, Li
             limit=limit
         )
         all_results.extend(res)
-    
-    # Using a dict to deduplicate by the actual text content (r.document)
-    # We store the source alongside it so we know where it came from
-    unique_chunks = {} 
-    
+
+    # dedupe by document text
+    unique_by_doc = {}
     for r in all_results:
-        if r.document not in unique_chunks:
-            # We use 'source' because that's what you set in process_file
-            source_path = r.metadata.get("source", "Unknown Path")
-            unique_chunks[r.document] = source_path
-    
+        doc = r.document or ""
+        if doc and doc not in unique_by_doc:
+            unique_by_doc[doc] = r
+
+    deduped_results = list(unique_by_doc.values())
+
+    # rerank using first query as anchor
+    anchor_query = queries[0] if queries else ""
+    reranked = rerank_results(anchor_query, deduped_results, top_k=4)
+
     context_parts = []
     sources = []
-    
-    for content, source in unique_chunks.items():
-        # Build the string for the LLM
+
+    for r in reranked:
+        content = r.document or ""
+        source = (r.metadata or {}).get("source", "Unknown Path")
         context_parts.append(f"[Source: {source}]\n{content}")
-        # Build the clean list for the Postman/UI response
         if source not in sources:
             sources.append(source)
-            
+
     return "\n\n---\n\n".join(context_parts), sources

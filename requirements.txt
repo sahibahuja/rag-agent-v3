@@ -16,6 +16,7 @@ docling
 # --- Vector Database & Embeddings ---
 qdrant-client
 fastembed
+sentence-transformers
 
 # --- Evaluation & Observability ---
 deepeval

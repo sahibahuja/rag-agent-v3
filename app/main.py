@@ -20,7 +20,13 @@ async def lifespan(app: FastAPI):
     try:
         setup_tracing()
         init_db()
-        print("✅ Qdrant and FastEmbed ready.")
+        
+        # UNIVERSAL FIX: Pre-warm the Reranker
+        from app.engine import get_reranker
+        print("🧠 Pre-loading BGE-Reranker model into memory...")
+        get_reranker() 
+        
+        print("✅ Qdrant, FastEmbed, and Reranker ready.")
     except Exception as e:
         print(f"❌ Database initialization failed: {e}")
     
