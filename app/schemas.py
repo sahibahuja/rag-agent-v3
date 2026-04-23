@@ -63,6 +63,7 @@ class GraphState(TypedDict):
     faithfulness_reason: str
     next_active_agent: NotRequired[str]
     routing_reason: NotRequired[str]
+    no_context_fallback: NotRequired[bool]
 
 class SupervisorRoute(BaseModel):
     next_active_agent: Literal["document_agent", "conversational_agent"] = Field(
@@ -70,3 +71,8 @@ class SupervisorRoute(BaseModel):
                     "or 'conversational_agent' for greetings/chitchat/memory."
     )
     reason: str = Field(default="", description="Short reason for routing decision")
+
+class CondensedQuery(BaseModel):
+    standalone_query: str = Field(
+        description="A standalone, fully explicit version of the latest user query using chat history context."
+    )

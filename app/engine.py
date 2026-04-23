@@ -72,7 +72,7 @@ def process_file(file_path: str, metadata: dict) -> int:
 
 # --- 2. Retrieval Logic (The "Search Engine") ---
 
-def get_context_from_qdrant(queries: List[str], limit: int = 3) -> Tuple[str, List[str]]:
+def get_context_from_qdrant(queries: List[str], limit: int = 8) -> Tuple[str, List[str]]:
     """
     Refactored Retrieval: Executes Multi-Query search and deduplicates results.
     """

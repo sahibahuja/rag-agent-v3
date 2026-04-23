@@ -1,11 +1,7 @@
-from typing import List, cast, Any
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import StrOutputParser
+from typing import cast
 from app.llm import llm
-from app.graph import GraphState
 from app.engine import get_context_from_qdrant
-from app.schemas import RouteQuery, GradeSchema, SupervisorRoute
-from app.evaluator import check_faithfulness
+from app.schemas import GraphState, RouteQuery, GradeSchema, SupervisorRoute, CondensedQuery
 
 # --- 1. The Router Node (PILLAR 1) ---
 # --- 1. The Router Node ---
@@ -71,16 +67,19 @@ def decide_to_generate(state: GraphState):
     print("--- DECIDING NEXT STEP ---")
     relevance = state.get("is_relevant", "no")
     count = state.get("iteration_count", 0)
-    
-    # 🚨 Put this line back in!
+
     print(f"DEBUG: Current iteration: {count}, Relevance: {relevance}")
-    
-    if relevance == "yes" or count >= 1:
-        print("--- DECISION: GENERATE (Limit reached or relevant) ---")
+
+    if relevance == "yes":
+        print("--- DECISION: GENERATE (Relevant) ---")
         return "generate"
-    else:
-        print("--- DECISION: REWRITE ---")
-        return "rewrite"
+
+    if count >= 2:
+        print("--- DECISION: NO_CONTEXT_FALLBACK (Limit reached + still not relevant) ---")
+        return "no_context"
+
+    print("--- DECISION: REWRITE ---")
+    return "rewrite"
 
 # --- 5. The Rewriter Node ---
 def rewrite_query(state: GraphState):
@@ -136,7 +135,9 @@ def generate_answer(state: GraphState):
 # ---7. Supervisor Node
 def supervisor_route(state: GraphState):
     print("--- NODE: SUPERVISOR ROUTING ---")
-    question = state.get("question", "")
+
+    raw_question = str(state.get("question", "")).strip()
+    search_query = str(state.get("search_query", "")).strip()
     history = state.get("history", [])
 
     if not isinstance(history, list):
@@ -144,22 +145,39 @@ def supervisor_route(state: GraphState):
 
     history_str = "\n".join(map(str, history)) if history else "No previous conversation."
 
+    # Fast path for clear greetings/small-talk openers
+    q_lower = raw_question.lower()
+    greeting_set = {"hi", "hello", "hey", "hi there", "hello there", "hey there"}
+    if q_lower in greeting_set:
+        return {
+            "next_active_agent": "conversational_agent",
+            "routing_reason": "greeting_fast_path",
+        }
+
     structured_supervisor = llm.with_structured_output(SupervisorRoute)
 
     system_msg = (
-        "You are a supervisor router. "
-        "Choose 'document_agent' for documen/factual/context-dependent queries. "
-        "Choose 'conversational_agent' for greetings, casual chat, and lightweight conversation. "
+        "You are a supervisor router for a multi-agent assistant. "
+        "Choose 'document_agent' when the user needs grounded facts from indexed knowledge/documents, "
+        "database checks, verification, or follow-up factual retrieval. "
+        "Choose 'conversational_agent' only for pure greetings, casual small talk, or non-factual chat. "
         "If uncertain, choose 'document_agent'."
     )
 
     try:
         result = cast(
             SupervisorRoute,
-            structured_supervisor.invoke([
-                ("system", system_msg),
-                ("human", f"History:\n{history_str}\n\nQuestion:\n{question}")
-            ])
+            structured_supervisor.invoke(
+                [
+                    ("system", system_msg),
+                    (
+                        "human",
+                        f"History:\n{history_str}\n\n"
+                        f"Raw Question:\n{raw_question}\n\n"
+                        f"Condensed Query (if any):\n{search_query}",
+                    ),
+                ]
+            ),
         )
 
         target = result.next_active_agent
@@ -169,14 +187,14 @@ def supervisor_route(state: GraphState):
         print(f"DEBUG: Supervisor chose -> {target}")
         return {
             "next_active_agent": target,
-            "routing_reason": result.reason
+            "routing_reason": result.reason,
         }
 
     except Exception as e:
         print(f"⚠️ Supervisor routing failed: {e}")
         return {
             "next_active_agent": "document_agent",
-            "routing_reason": "fallback_on_error"
+            "routing_reason": "fallback_on_error",
         }
 
 # 8. returns safe value for graph conditional edges.
@@ -214,4 +232,63 @@ def conversational_agent(state: GraphState):
         "response": answer_text,
         "sources": [],
         "history": [f"User: {question}", f"AI: {answer_text}"]
+    }
+# 9. Condense Query
+def condense_query(state: GraphState):
+    print("--- NODE: CONDENSING QUERY ---")
+    question = str(state.get("question", "")).strip()
+    history = state.get("history", [])
+
+    if not isinstance(history, list):
+        history = [str(history)]
+
+    history_str = "\n".join(map(str, history)) if history else "No previous conversation."
+
+    structured_condense = llm.with_structured_output(CondensedQuery)
+
+    system_msg = (
+        "Rewrite ONLY the latest user question into a standalone question using history. "
+        "Do NOT answer. Do NOT output facts, addresses, names, or explanations. "
+        "Keep the same intent. If already standalone, return it unchanged."
+    )
+
+    try:
+        result = cast(
+            CondensedQuery,
+            structured_condense.invoke([
+                ("system", system_msg),
+                ("human", f"History:\n{history_str}\n\nLatest user question:\n{question}")
+            ])
+        )
+
+        standalone = str(result.standalone_query).strip()
+        if not standalone:
+            standalone = question
+
+        # Guardrail: avoid fact-like outputs replacing the query
+        bad_fact_like = ("\n" not in standalone and "?" not in standalone and len(standalone.split()) <= 8)
+        if bad_fact_like and len(question.split()) >= 3:
+            standalone = question
+
+        print(f"DEBUG: Condensed query -> {standalone}")
+        return {"search_query": standalone}
+
+    except Exception as e:
+        print(f"⚠️ Condense failed: {e}")
+        return {"search_query": question}    
+#10 
+def no_context_fallback(state: GraphState):
+    print("--- NODE: NO CONTEXT FALLBACK ---")
+    question = state.get("question", "")
+    return {
+        "response": (
+            "I could not find enough grounded information in the indexed documents "
+            f"to answer: '{question}'. Please rephrase your question or ingest the correct document."
+        ),
+        "sources": state.get("sources", []),
+        "history": [
+            f"User: {question}",
+            "AI: I could not find enough grounded information in the indexed documents."
+        ],
+        "no_context_fallback": True
     }

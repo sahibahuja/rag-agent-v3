@@ -1,171 +1,259 @@
-# 🤖 Phase 2: Agentic RAG Pipeline (Production-Grade)
+# RAG Agent v3 - Multi-Agent, Stateful, Observable RAG
 
-A highly optimized Agentic Retrieval-Augmented Generation (RAG) system utilizing **LangGraph** for state-machine orchestration, **Redis** for persistent memory, and **DeepEval** for asynchronous faithfulness validation.
+`rag-agent-v3` is a production-style Retrieval-Augmented Generation system with:
 
-Powered by **Docling** (multi-format document ingestion), **Qdrant** (vector storage), **Arize Phoenix** (observability), **RedisInsight** (memory UI), and **Streamlit** (interactive frontend).
+- FastAPI backend (`app/main.py`)
+- LangGraph multi-agent orchestration (`app/graph.py`, `app/nodes.py`)
+- Qdrant vector retrieval + Docling ingestion (`app/engine.py`)
+- Redis checkpointed conversation memory
+- Streamlit frontend with SSE streaming (`frontend/streamlit_app.py`)
+- DeepEval background faithfulness checks + Phoenix tracing
 
----
+This repository currently contains:
 
-## ✨ Phase 2: Core Features & Implementations
-
-This phase transitioned the system from a basic "query-and-retrieve" script into a resilient, distributed agentic architecture. 
-
-* **Intent Routing (The Express Lane):** The agent dynamically classifies the user's prompt. If the user asks a conversational question (e.g., "What did I just ask you?"), it bypasses the vector database entirely to save time and compute.
-* **Structured Binary Grading:** Replaced fragile prompt-based grading with strict **Pydantic Structured Outputs**. A local Llama 3.1 8B model grades the retrieved context as exactly `yes` or `no`, eliminating JSON parsing crashes.
-* **State-Separated Rewriting:** If context is graded `no`, the agent rewrites the query to try again. Crucially, it stores the new query in a `search_query` state variable while leaving the user's original `question` untouched, ensuring the final answer addresses the exact original request.
-* **Speed-Capped Loops (Anti-Death Loop):** The graph is hard-coded to allow a maximum of 1 rewrite iteration. If it still fails to find relevant context, it falls back gracefully rather than looping infinitely.
-* **Asynchronous LLM-as-a-Judge (DeepEval):** The user receives their answer in ~5 seconds. Meanwhile, a decoupled FastAPI `BackgroundTask` runs DeepEval's `FaithfulnessMetric` to score the output for hallucinations. 
-* **W3C Distributed Tracing:** Using OpenTelemetry context propagation, the background DeepEval task mathematically inherits the original request's `trace_id`. In Arize Phoenix, the background validation appears in the exact same waterfall trace as the user's original chat.
-* **Time-Travel Memory (Redis):** Integrated `AsyncRedisSaver`. The Streamlit UI can query the backend to walk backward through Redis checkpoints and perfectly reconstruct a user's entire chat history when they switch `thread_id`s.
+- Phase 3 Step 1: Supervisor hub-and-spoke routing
+- Phase 3 Step 2: History-aware query condensation
+- Reliability hardening: no-context fallback for low-grounding answers
 
 ---
 
-## 🏗️ The Agentic Graph Flow
+## Architecture Overview
 
-1. **User Input:** Prompt enters via Streamlit UI.
-2. **Router Node:** Decides `vector_store` vs. `chat_history`.
-3. **Retrieval Node:** Generates alternative keywords and fetches top `k=3` chunks from Qdrant.
-4. **Grader Node:** Pydantic validation confirms if chunks are relevant.
-5. **Rewriter Node (Conditional):** Modifies search terms if grading fails (max 1 loop).
-6. **Generator Node:** Blends retrieved context + Redis chat history -> Returns Answer.
-7. **Background Worker:** Runs DeepEval against the generated answer and logs to Phoenix.
+### Core Components
+
+- `FastAPI`: API surface for ingestion, chat, and history.
+- `LangGraph`: stateful graph with conditional routing.
+- `Qdrant`: vector store for document chunks.
+- `Redis`: chat/session checkpoint state (`thread_id` based).
+- `Streamlit`: user interface and token streaming display.
+- `DeepEval`: asynchronous faithfulness scoring after response generation.
+- `Arize Phoenix`: tracing and observability via OpenTelemetry.
+
+### Current Graph Flow (Phase 3)
+
+1. `condense_query` rewrites follow-up user messages into standalone search intent.
+2. `supervisor_route` selects:
+   - `document_agent` for grounded/factual/indexed-knowledge questions
+   - `conversational_agent` for greetings/light chat
+3. Document path:
+   - `retrieve_docs` -> `grade_documents`
+   - if relevant -> `generate_answer`
+   - else -> `rewrite_query` loop (bounded)
+   - if still irrelevant at loop limit -> `no_context_fallback`
+4. Conversational path:
+   - `conversational_agent` returns response directly.
+5. Background task runs DeepEval for completed answer.
 
 ---
 
-## 🛠️ Prerequisites
+## Prerequisites (New Machine)
 
-* **Python:** 3.10+
-* **Ollama:** Installed locally (Running `llama3.1:8b`).
-* **Docker & Docker Compose:** For running Qdrant, Redis, RedisInsight, and Arize Phoenix.
+Install these first:
+
+- Python `3.10+` (recommended: `3.11`)
+- Docker Desktop (with Docker Compose)
+- Ollama
+- Git
+
+Optional but recommended:
+
+- RedisInsight (already exposed via docker-compose)
+- Postman or curl for API testing
 
 ---
 
-## 🚀 Setup & Installation
+## Quick Start (Fresh Setup)
 
-### 1. Start Infrastructure
+### 1) Clone and enter repository
+
+```bash
+git clone <your-repo-url>
+cd rag-agent-v3
+```
+
+### 2) Create and activate virtual environment
+
+Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+macOS/Linux:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### 3) Install Python dependencies
+
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### 4) Pull local model in Ollama
+
+```bash
+ollama pull llama3.1:8b
+```
+
+### 5) Start infrastructure services
+
 ```bash
 docker-compose up -d
-Qdrant: http://localhost:6333 (Vector DB)
+```
 
-Arize Phoenix: http://localhost:6006 (Tracing)
+Services:
 
-RedisInsight: http://localhost:8001 (Memory UI)
+- Qdrant: `http://localhost:6333`
+- Phoenix UI: `http://localhost:6006`
+- RedisInsight UI: `http://localhost:8001`
+- Redis: `localhost:6379`
 
-2. Pull Local LLM
-This project specifically requires the 8B parameter model for reliable tool-calling and structured JSON schema adherence.
+### 6) Start backend API
 
-Bash
-ollama pull llama3.1:8b
-3. Install Requirements
-Ensure all dependencies are installed.
-
-Bash
-pip install -r requirements.txt
-🏃 Running the Application
-This project operates with a decoupled backend and frontend. You will need two terminal windows.
-
-Terminal 1: Start the Backend (FastAPI)
-
-Bash
+```bash
 python app/main.py
-API Base URL: http://localhost:8080
+```
 
-Swagger UI: http://localhost:8080/docs
+Backend URLs:
 
-Terminal 2: Start the Frontend (Streamlit)
+- API base: `http://localhost:8080`
+- Swagger: `http://localhost:8080/docs`
 
-Bash
+### 7) Start Streamlit frontend (new terminal, same venv)
+
+```bash
 streamlit run frontend/streamlit_app.py
-Interactive UI: http://localhost:8501
+```
 
-🧪 API Endpoints & Usage
-1. Document Ingestion
-Uses Docling to parse and chunk multi-format files (PDF, Word, PPT, HTML, Markdown) into Qdrant.
-POST /v2/ingest/file
+Frontend URL:
 
-JSON
-{
-    "file_path": "C:/absolute/path/to/your/document.pdf",
-    "metadata": { "category": "manual" }
-}
-2. Agentic Chat (Async Eval)
-POST /v2/agent/chat
-
-JSON
-{
-    "question": "What are the key takeaways from the document?",
-    "thread_id": "user_session_99" 
-}
-Response (Immediate):
-
-JSON
-{
-    "answer": "The document states...",
-    "sources": ["..."],
-    "iteration_count": 0,
-    "faithfulness_score": -1.0,
-    "faithfulness_reason": "Evaluation is running in the background. Check server logs/Phoenix."
-}
-3. Time-Travel Chat History
-GET /v2/agent/history/{thread_id}
-Used by the Streamlit frontend to read Redis memory and reconstruct the exact chat history when switching active threads.
-
-📊 Observability & Memory Management
-Arize Phoenix (Tracing)
-View the full lifecycle of a request, including the Background DeepEval Check. The system uses W3C Trace Context propagation to ensure that even though the evaluation runs later, it is linked to the original user's trace_id.
-
-RedisInsight (Memory UI)
-Navigate to http://localhost:8001 to visualize the chat history.
-
-Keys: Stored as checkpoint_thread_id:<your_id>.
-
-Management: You can delete keys in RedisInsight to manually reset the agent's memory for a specific user without restarting the server.
-
-📂 Project Structure (The Monorepo)
-app/main.py: FastAPI entry point with BackgroundTasks, Time-Travel history endpoints, and OTEL context injection.
-
-app/schemas.py: Pydantic models with Literal types for bulletproof routing.
-
-app/nodes.py: Graph logic (Routing, Retrieval, Grading, Rewriting, Generation).
-
-app/evaluator.py: Optimized DeepEval wrapper for Llama 3.1 8B (no Pydantic cage to allow native 'verdicts').
-
-app/graph.py: The StateGraph topology (Ghost nodes removed for maximum speed).
-
-app/engine.py: Docling ingestion logic and fast embedding configurations.
-
-app/llm.py: Centralized Ollama configuration with format="json".
-
-frontend/streamlit_app.py: The interactive chat UI with state-synced thread management.
+- `http://localhost:8501`
 
 ---
 
-## 🔄 Phase 3 Step 1 Update (Supervisor Refactor)
+## Environment and Configuration
 
-This project now includes the first Phase 3 architectural upgrade: a **Hub-and-Spoke Supervisor flow** on top of the existing Phase 2 pipeline.
+This project currently reads key settings from environment variables in code defaults.
+If you want custom behavior, set these before startup:
 
-### What was added
-- `GraphState` now includes:
-  - `next_active_agent`
-  - `routing_reason`
-- New supervisor routing node decides:
-  - `document_agent` (RAG-heavy path)
-  - `conversational_agent` (light chat path)
-- Graph entry now starts at supervisor and conditionally branches by active agent.
-- Existing document path (`retrieve -> grade -> rewrite/generate`) is preserved.
+- `QDRANT_HOST` (default: `localhost`)
+- `QDRANT_PORT` (default: `6333`)
+- `COLLECTION_NAME` (default: `pdf_docs`)
+- `EMBED_MODEL` (default: `BAAI/bge-m3`)
 
-### Why this change
-- Decouples orchestration from response generation.
-- Creates a clean base for Phase 3 Step 2+ (query condensation, reranker, rolling memory, telemetry DB).
-
-### Current note
-- Streamed token behavior differs between agent paths; conversational responses may require fallback token emission from final state for Streamlit rendering consistency.
+No `.env` file is required by default, but `python-dotenv` loading is supported in `app/database.py`.
 
 ---
 
-## 🧾 Changelog
+## API Reference
 
-### Phase 3 - Step 1
-- Added supervisor-based multi-agent routing.
-- Introduced `next_active_agent` and `routing_reason` state fields.
-- Added conversational spoke while preserving existing Phase 2 document retrieval pipeline.
+### 1) Ingest Document
+
+`POST /v2/ingest/file`
+
+Request:
+
+```json
+{
+  "file_path": "C:/absolute/path/to/document.pdf",
+  "metadata": {
+    "category": "resume"
+  }
+}
+```
+
+Response:
+
+```json
+{
+  "status": "success",
+  "chunks_indexed": 42
+}
+```
+
+### 2) Chat with Agent
+
+`POST /v2/agent/chat`
+
+Request:
+
+```json
+{
+  "question": "Tell me the education details from the resume",
+  "thread_id": "user_session_1"
+}
+```
+
+Response is SSE stream with:
+
+- token events (`type: token`)
+- metadata event (`type: metadata`, includes `sources`)
+
+### 3) Retrieve Chat History
+
+`GET /v2/agent/history/{thread_id}`
+
+Returns reconstructed user/assistant messages from Redis checkpoints.
+
+---
+
+## Project Structure
+
+- `app/main.py` - FastAPI app, SSE streaming, background eval, history endpoint
+- `app/graph.py` - LangGraph topology and routing edges
+- `app/nodes.py` - condensation, supervisor, retrieval, grading, rewrite, generation, fallback
+- `app/schemas.py` - API/state schemas and structured output contracts
+- `app/engine.py` - Docling ingestion and Qdrant retrieval helpers
+- `app/database.py` - Qdrant client initialization and collection checks
+- `app/evaluator.py` - DeepEval faithfulness logic
+- `app/observability.py` - Phoenix/OpenTelemetry instrumentation
+- `app/llm.py` - Ollama model configuration
+- `frontend/streamlit_app.py` - Streamlit client and stream rendering
+- `docker-compose.yml` - Qdrant, Redis, RedisInsight, Phoenix services
+
+---
+
+## Troubleshooting
+
+### Streamlit shows blank response for some turns
+
+- Ensure backend emits fallback token from final state when no model stream is produced.
+- Confirm `/v2/agent/chat` stream includes `token` and `metadata` events.
+
+### Document exists but answer says "not found"
+
+- Re-ingest the correct document path.
+- Test with a fresh `thread_id`.
+- Increase retrieval limit temporarily for debugging.
+- Verify retrieved chunks/logs include expected section text.
+
+### Phoenix fails to start (port bind)
+
+- Check if configured port is already in use.
+- Avoid conflicting env overrides for `PHOENIX_GRPC_PORT`.
+
+### Redis history appears stale
+
+- Switch to a new `thread_id` for clean tests.
+- Optionally clear keys via RedisInsight.
+
+---
+
+## Development Notes
+
+- This repo is intentionally built as a modular platform for future autonomous workflows.
+- Current roadmap target includes:
+  - Step 3: cross-encoder reranking
+  - Step 4: rolling history summarization
+  - Step 5: telemetry persistence to PostgreSQL
+
+---
+
+## License
+
+Add your preferred license file (`LICENSE`) if this project will be shared publicly.
