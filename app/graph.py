@@ -11,6 +11,7 @@ from app.nodes import (
     generate_answer,
     decide_to_generate,
     rewrite_query,
+    summarize_memory
 )
 
 builder = StateGraph(GraphState)
@@ -24,6 +25,7 @@ builder.add_node("grade", grade_documents)
 builder.add_node("rewrite", rewrite_query)
 builder.add_node("generate", generate_answer)
 builder.add_node("no_context", no_context_fallback)
+builder.add_node("summarize", summarize_memory)
 
 # Entry: always start at condensequery
 builder.set_entry_point("condense")
@@ -53,8 +55,9 @@ builder.add_conditional_edges(
 builder.add_edge("rewrite", "retrieve")
 
 # End nodes
-builder.add_edge("generate", END)
-builder.add_edge("conversational", END)
-builder.add_edge("no_context", END)
+builder.add_edge("generate", "summarize")
+builder.add_edge("conversational", "summarize")
+builder.add_edge("no_context", "summarize")
+builder.add_edge("summarize", END)
 
 agent_builder = builder

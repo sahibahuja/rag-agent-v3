@@ -1,5 +1,3 @@
-version: "3.8"
-
 name: rag-agent-v3
 
 services:
@@ -31,17 +29,36 @@ services:
       - "8001:5540" # The UI will be available on port 8001
     depends_on:
       - redis       # Make sure your main redis service is named 'redis'
+    restart: unless-stopped
+
+  # --- NEW: Step 5 - Telemetry Persistence Database ---
+  postgres:
+    image: postgres:15-alpine
+    container_name: phoenix_postgres
+    environment:
+      - POSTGRES_USER=phoenix_user
+      - POSTGRES_PASSWORD=phoenix_password
+      - POSTGRES_DB=phoenix_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+    restart: always
 
   # 3. Observability & Tracing (Arize Phoenix)
-  # FIXED: Corrected image name to arizephoenix/phoenix
   phoenix:
     image: arizephoenix/phoenix:latest
     container_name: phoenix_v2
     ports:
       - "6006:6006" # Dashboard UI
       - "4319:4317" # OTLP Collector
+    environment:
+      # Tell Phoenix to use Postgres instead of its temporary local memory!
+      - PHOENIX_SQL_DATABASE_URL=postgresql://phoenix_user:phoenix_password@postgres:5432/phoenix_db
+    depends_on:
+      - postgres
     restart: always
 
 networks:
   default:
-    name: rag_network_v2
+    name: rag_network_v3

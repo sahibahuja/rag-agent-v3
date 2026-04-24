@@ -24,3 +24,4 @@ __pycache__/
 qdrant_storage/
 .deepeval/
 redis_data/
+postgres_data/

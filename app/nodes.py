@@ -114,8 +114,15 @@ def generate_answer(state: GraphState):
     # 🚨 KEPT: Pulling sources from the state
     sources = state.get("sources", [])
     
+    # 🚨 THE CONTEXT DIET 🚨
     history = state.get("history", [])
-    history_str = "\n".join(history) if history else "No previous conversation."
+    summary = state.get("summary", "")
+    
+    # Enforce the Context Diet: Only take the last 4 messages
+    recent_history = history[-4:] if len(history) >= 4 else history
+    recent_history_str = "\n".join(map(str, recent_history)) if recent_history else "No previous conversation."
+    summary_str = f"Prior Conversation Summary: {summary}\n\n" if summary else ""
+    active_memory_block = f"{summary_str}Recent History:\n{recent_history_str}"
 
     system_msg = (
         "You are a helpful assistant. "
@@ -124,7 +131,7 @@ def generate_answer(state: GraphState):
     
     response = llm.invoke([
         ("system", system_msg),
-        ("human", f"History:\n{history_str}\n\nContext:\n{context}\n\nQuestion: {question}")
+        ("human", f"Memory Context:\n{active_memory_block}\n\nContext:\n{context}\n\nQuestion: {question}")
     ])
 
     # 🚨 KEPT: Returning 'sources' in the final payload
@@ -141,12 +148,16 @@ def supervisor_route(state: GraphState):
 
     raw_question = str(state.get("question", "")).strip()
     search_query = str(state.get("search_query", "")).strip()
+    # 🚨 THE CONTEXT DIET 🚨
     history = state.get("history", [])
-
-    if not isinstance(history, list):
-        history = [str(history)]
-
-    history_str = "\n".join(map(str, history)) if history else "No previous conversation."
+    summary = state.get("summary", "")
+    
+    # Enforce the Context Diet: Only take the last 4 messages
+    recent_history = history[-4:] if len(history) >= 4 else history
+    recent_history_str = "\n".join(map(str, recent_history)) if recent_history else "No previous conversation."
+    
+    summary_str = f"Prior Conversation Summary: {summary}\n\n" if summary else ""
+    active_memory_block = f"{summary_str}Recent History:\n{recent_history_str}"
 
     structured_supervisor = llm.with_structured_output(SupervisorRoute)
 
@@ -169,7 +180,7 @@ def supervisor_route(state: GraphState):
                     ("system", system_msg),
                     (
                         "human",
-                        f"History:\n{history_str}\n\n"
+                        f"Memory Context:\n{active_memory_block}\n\n"
                         f"Raw Question:\n{raw_question}\n\n"
                         f"Condensed Query:\n{search_query}",
                     ),
@@ -209,12 +220,15 @@ def pick_active_agent(state: GraphState):
 def conversational_agent(state: GraphState):
     print("--- NODE: CONVERSATIONAL AGENT ---")
     question = state.get("question", "")
+    # 🚨 THE CONTEXT DIET 🚨
     history = state.get("history", [])
-
-    if not isinstance(history, list):
-        history = [str(history)]
-
-    history_str = "\n".join(map(str, history)) if history else "No previous conversation."
+    summary = state.get("summary", "")
+    
+    # Enforce the Context Diet: Only take the last 4 messages
+    recent_history = history[-4:] if len(history) >= 4 else history
+    recent_history_str = "\n".join(map(str, recent_history)) if recent_history else "No previous conversation."
+    summary_str = f"Prior Conversation Summary: {summary}\n\n" if summary else ""
+    active_memory_block = f"{summary_str}Recent History:\n{recent_history_str}"
 
     system_msg = (
         "You are a helpful conversational assistant. "
@@ -224,7 +238,7 @@ def conversational_agent(state: GraphState):
 
     response = llm.invoke([
         ("system", system_msg),
-        ("human", f"History:\n{history_str}\n\nUser question:\n{question}")
+        ("human", f"Memory Context:\n{active_memory_block}\n\nLatest user question:\n{question}")
     ])
 
     answer_text = str(response.content)
@@ -235,16 +249,20 @@ def conversational_agent(state: GraphState):
         "history": [f"User: {question}", f"AI: {answer_text}"]
     }
 # 9. Condense Query
-# Replace this in app/nodes.py
 def condense_query(state: GraphState):
     print("--- NODE: CONDENSING QUERY (UNIVERSAL) ---")
     question = str(state.get("question", "")).strip()
+    
+    # 🚨 THE CONTEXT DIET 🚨
     history = state.get("history", [])
-
-    if not isinstance(history, list):
-        history = [str(history)]
-
-    history_str = "\n".join(map(str, history)) if history else "No previous conversation."
+    summary = state.get("summary", "")
+    
+    # Enforce the Context Diet: Only take the last 4 messages
+    recent_history = history[-4:] if len(history) >= 4 else history
+    recent_history_str = "\n".join(map(str, recent_history)) if recent_history else "No recent conversation."
+    
+    summary_str = f"Prior Conversation Summary: {summary}\n\n" if summary else ""
+    active_memory_block = f"{summary_str}Recent History:\n{recent_history_str}"
 
     structured_condense = llm.with_structured_output(CondensedQuery)
 
@@ -262,7 +280,8 @@ def condense_query(state: GraphState):
             CondensedQuery,
             structured_condense.invoke([
                 ("system", system_msg),
-                ("human", f"History:\n{history_str}\n\nLatest user question:\n{question}")
+                # 🚨 THE FIX: Use active_memory_block instead of history_str
+                ("human", f"Memory Context:\n{active_memory_block}\n\nLatest user question:\n{question}")
             ])
         )
 
@@ -280,8 +299,7 @@ def condense_query(state: GraphState):
 
     except Exception as e:
         print(f"⚠️ Condense failed: {e}")
-        return {"search_query": question}    
-#10 
+        return {"search_query": question}#10 
 def no_context_fallback(state: GraphState):
     print("--- NODE: NO CONTEXT FALLBACK ---")
     question = state.get("question", "")
@@ -297,3 +315,45 @@ def no_context_fallback(state: GraphState):
         ],
         "no_context_fallback": True
     }
+#11. History Sumary Node
+def summarize_memory(state: GraphState):
+    print("--- NODE: SUMMARIZING MEMORY ---")
+    history = state.get("history", [])
+    current_summary = state.get("summary", "")
+    summarized_count = state.get("messages_summarized", 0)
+
+    # We want to keep the last 4 messages verbatim. 
+    # If we have un-summarized messages older than that, we compress them.
+    if len(history) - summarized_count > 4:
+        
+        # Slice out the messages that are old enough to be summarized, 
+        # but haven't been summarized yet.
+        new_msgs_to_summarize = history[summarized_count : -4]
+        msgs_str = "\n".join(new_msgs_to_summarize)
+
+        system_msg = (
+            "You are a memory compression assistant. Your job is to update the conversation summary. "
+            "Combine the Current Summary and the New Older Messages into a single, concise paragraph. "
+            "Focus ONLY on extracting key facts, user attributes, and main topics discussed. "
+            "Be extremely brief."
+        )
+
+        try:
+            response = llm.invoke([
+                ("system", system_msg),
+                ("human", f"Current Summary:\n{current_summary}\n\nNew Older Messages to compress:\n{msgs_str}")
+            ])
+            
+            new_summary = str(response.content).strip()
+            
+            print(f"DEBUG: Memory Compressed. New Summary: {new_summary}")
+            
+            return {
+                "summary": new_summary,
+                "messages_summarized": summarized_count + len(new_msgs_to_summarize)
+            }
+        except Exception as e:
+            print(f"⚠️ Memory Summarization failed: {e}")
+            return {}
+
+    return {} # No summarization needed yet

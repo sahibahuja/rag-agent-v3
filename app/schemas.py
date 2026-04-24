@@ -64,6 +64,8 @@ class GraphState(TypedDict):
     next_active_agent: NotRequired[str]
     routing_reason: NotRequired[str]
     no_context_fallback: NotRequired[bool]
+    summary: NotRequired[str]
+    messages_summarized: NotRequired[int]
 
 class SupervisorRoute(BaseModel):
     next_active_agent: Literal["document_agent", "conversational_agent"]
