@@ -9,7 +9,8 @@ load_dotenv()
 _client = None
 
 # CONFIGURATION
-COLLECTION_NAME = os.getenv("COLLECTION_NAME", "pdf_docs")
+COLLECTION_NAME = os.getenv("COLLECTION_NAME", "docs")
+PARENT_COLLECTION_NAME = os.getenv("PARENT_COLLECTION_NAME", "parent_docs")
 # Standardizing names for Phase 3
 EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-m3") 
 
@@ -40,26 +41,30 @@ def init_db():
     """Ensures the collection exists and handles dimension safety checks"""
     q_client = get_client()
     
+    # 1. Initialize Child Collection (Vector Search)
     if q_client.collection_exists(COLLECTION_NAME):
         info = q_client.get_collection(COLLECTION_NAME)
-        
-        # 1. Safe access to the vector config
         vector_config = info.config.params.vectors
         
-        # 2. Check if it's a dict (multiple vectors) or a single VectorParams object
         if vector_config is not None:
-            # Handle the case where it's a dictionary of vectors (common with FastEmbed)
             if isinstance(vector_config, dict):
                 current_vector = vector_config.get(EMBED_MODEL)
                 current_size = current_vector.size if current_vector else None
             else:
-                # Handle the case where it's a single VectorParams object
                 current_size = getattr(vector_config, 'size', None)
 
-            # 3. Perform the mismatch check if we successfully got a size
             if current_size:
                 expected_size = 1024 if "m3" in EMBED_MODEL.lower() or "large" in EMBED_MODEL.lower() else 384
-                
                 if current_size != expected_size:
                     print(f"⚠️ Mismatch: Current {current_size} != Expected {expected_size}. Recreating...")
                     q_client.delete_collection(COLLECTION_NAME)
+
+    # 2. Initialize Parent Collection (Full-Text Store - No vectors needed)
+    if not q_client.collection_exists(PARENT_COLLECTION_NAME):
+        print(f"--- Creating Parent Collection: {PARENT_COLLECTION_NAME} ---")
+        # Creating a collection with empty vector config as it will only store payload
+        from qdrant_client.http.models import VectorParams, Distance
+        q_client.create_collection(
+            collection_name=PARENT_COLLECTION_NAME,
+            vectors_config={} # No embeddings for parent collection to save space/compute
+        )

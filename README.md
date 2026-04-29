@@ -1,225 +1,64 @@
-# 🤖 Phase 3: Agentic RAG Pipeline (Production-Grade) - Multi-Agent, Stateful, Observable RAG
+# 🤖 Enterprise Agentic RAG Pipeline - Multi-Tenant, Stateful, Observable
 
-`rag-agent-v3` is a production-style Retrieval-Augmented Generation system with:
+`rag-agent-v3` is a production-grade Retrieval-Augmented Generation (RAG) architecture designed for scalability, data security, and autonomous routing.
 
-- FastAPI backend (`app/main.py`)
-- LangGraph multi-agent orchestration (`app/graph.py`, `app/nodes.py`)
-- Qdrant vector retrieval + Docling ingestion + BGE-Reranker (`app/engine.py`)
-- Redis checkpointed conversation memory
-- PostgreSQL permanent telemetry database
-- Streamlit frontend with SSE streaming (`frontend/streamlit_app.py`)
-- DeepEval background faithfulness checks + Phoenix tracing
-
-### ✅ Phase 3 is Complete. This repository currently features:
-
-- **Step 1:** Supervisor hub-and-spoke routing (Policy-Based Routing)
-- **Step 2:** History-aware query condensation (Pronoun & Context Resolution)
-- **Step 3:** Two-Stage Retrieval (Top-10 Qdrant -> Top-4 `BAAI/bge-reranker-base` + "Goldilocks" Grader)
-- **Step 4:** Rolling History Summarization (Context Window Diet / Buffer Memory)
-- **Step 5:** Telemetry persistence to PostgreSQL (Enterprise Tracing)
-- **Reliability Hardening:** No-context fallback for low-grounding answers, model pre-warming for instant inference, and strict token limits.
+Built for enterprise environments, this system features hard multi-tenancy at the vector database level, persistent time-travel state management, and asynchronous telemetry.
 
 ---
 
-## Architecture Overview
+## 🏗️ System Architecture & Data Flow
 
-### Core Components
+The following diagram illustrates the lifecycle of a user request through the multi-agent system:
 
-- `FastAPI`: API surface for ingestion, chat, and history.
-- `LangGraph`: Stateful graph with conditional routing and memory management.
-- `Qdrant & FastEmbed`: Vector store and fast embedding for document chunks.
-- `CrossEncoder (BGE-Reranker)`: Stage 2 retrieval refinement to maximize precision.
-- `Redis`: Chat/session checkpoint state (`thread_id` based).
-- `PostgreSQL`: Permanent ACID-compliant storage for Phoenix spans, traces, and metrics.
-- `Streamlit`: User interface and token streaming display.
-- `DeepEval`: Asynchronous faithfulness scoring after response generation.
-- `Arize Phoenix`: Tracing and observability via OpenTelemetry.
+```mermaid
+graph TD
+    %% UI Layer
+    A[User / Streamlit UI] -->|SSE Payload w/ tenant_id & thread_id| B(FastAPI Gateway)
 
-### Current Graph Flow (Phase 3)
+    %% API & Graph Entry
+    B -->|Injects tenant_id| C{LangGraph StateManager}
+    C --> D[Condense Query Node]
 
-1. `condense_query`: Rewrites follow-up user messages into standalone search intent using active memory.
-2. `supervisor_route`: Dynamically selects via policy:
-   - `document_agent`: For grounded/factual/indexed-knowledge questions.
-   - `conversational_agent`: For pure greetings/light chat (bypasses RAG).
-3. **Document Path (Two-Stage):**
-   - `retrieve_docs` -> Fetches Top 10 chunks from Qdrant, reranks to Top 4 via BGE-Reranker.
-   - `grade_documents` -> Evaluates relevance using a lenient pronoun/strict fact policy.
-   - if relevant -> `generate_answer`.
-   - else -> `rewrite_query` loop (bounded).
-   - if still irrelevant at loop limit -> `no_context_fallback`.
-4. **Conversational Path:**
-   - `conversational_agent` returns non-grounded responses directly.
-5. **Memory Manager:**
-   - `summarize_memory` runs at the end of the graph. If history exceeds 4 messages, it compresses older messages into a rolling summary to protect the LLM context window.
-6. **Telemetry:**
-   - Background task runs DeepEval for completed answers and permanently exports all telemetry/spans to PostgreSQL via Phoenix.
+    %% Supervisor Routing
+    D --> E{Supervisor Agent}
+    E -->|Casual Chat| F[Conversational Agent]
+    E -->|Factual Query| G[Retrieve Docs Node]
 
----
+    %% Retrieval Engine (The Security Wall)
+    G -->|Applies tenant_id Filter| H[(Qdrant Vector DB)]
+    H -->|Stage 1: FastEmbed BGE-M3| G
+    G -->|Stage 2: BAAI CrossEncoder| I[Rerank & Merge Parent Chunks]
 
-## Prerequisites
+    %% Evaluation & Generation
+    I --> J[Grade Documents Node]
+    J -->|Irrelevant| K[Rewrite Query]
+    K --> G
+    J -->|Relevant| L[Generate Answer Node]
 
-Install these first:
+    %% Memory & Telemetry
+    F --> M[Summarize Memory Node]
+    L --> M
+    M -->|Checkpoint State| N[(Redis)]
+    M --> O[Stream Response to UI]
 
-- Python `3.10+` (recommended: `3.11`)
-- Docker Desktop (with Docker Compose)
-- Ollama
-- Git
-
-Optional but recommended:
-- RedisInsight (exposed via docker-compose)
-- DBeaver / pgAdmin (to view PostgreSQL data)
-- Postman or curl for API testing
-
----
-
-## Quick Start (Fresh Setup)
-
-### 1) Clone and enter repository
-
-```bash
-git clone <your-repo-url>
-cd rag-agent-v3
-2) Create and activate virtual environment
-Windows PowerShell:
-
-PowerShell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-macOS/Linux:
-
-Bash
-python3 -m venv .venv
-source .venv/bin/activate
-3) Install Python dependencies
-Bash
-pip install --upgrade pip
+    %% Async Observability
+    O -.->|Background Task| P[DeepEval Faithfulness]
+    P -.-> Q[(PostgreSQL / Phoenix)]
+🧠 Architecture Decision Records (ADRs) - The "Why"This system implements several advanced architectural patterns to solve common RAG failure points:1. Hard Multi-Tenancy via Payload Filtering (Data Security)Problem: In a multi-user environment, Tenant A's LLM prompt might accidentally retrieve Tenant B's sensitive documents.Solution: The system enforces a mathematical "Security Wall." A tenant_id is injected into the GraphState at the API gateway. Qdrant applies a strict FieldCondition payload filter during retrieval, ensuring 0% cross-tenant data leakage, regardless of prompt manipulation.2. Parent-Child Chunking Strategy (Context vs. Searchability)Problem: Small document chunks are great for exact-match searching, but terrible for providing the LLM enough context to answer complex questions.Solution: Documents are ingested using a Parent-Child strategy. Qdrant indexes small 600-character "Child" chunks for high-precision semantic search. During retrieval, the engine intercepts the result, maps it to its UUID, and swaps it with the larger 3000-character "Parent" chunk before sending it to the LLM.3. The "Context Diet" (Rolling Buffer Memory)Problem: Long conversations cause the LLM context window to overflow, increasing latency and hallucination rates.Solution: A dedicated summarize_memory node sits at the end of the graph. It maintains a strict "diet": only the last 4 messages are kept verbatim. Any older messages are compressed into a rolling summary paragraph by a background LLM call.4. Policy-Based Supervisor RoutingProblem: Forcing all user queries through a Vector DB wastes compute and causes awkward answers to simple greetings like "Hello."Solution: A Supervisor Agent evaluates the condensed query against strict routing policies. It routes grounded questions to the document_agent and casual/follow-up questions to the conversational_agent, bypassing the RAG pipeline entirely when unnecessary.5. Asynchronous ObservabilityProblem: Running RAG Evaluation (DeepEval) synchronously blocks the UI, causing massive latency for the end-user.Solution: DeepEval faithfulness checks and Arize Phoenix OpenTelemetry tracing are offloaded to FastAPI BackgroundTasks. The user receives their streaming response instantly, while the system grades the answer in the background and commits the trace to an ACID-compliant PostgreSQL database.🛠️ Tech Stack & JustificationComponentTechnologyJustificationBackend / APIFastAPIAsync-first, high throughput, native Server-Sent Events (SSE) support.OrchestrationLangGraphState-machine based routing, cyclical loops, and native Redis integration.Vector DatabaseQdrantHigh-performance Rust-based engine, supports hard payload filtering.EmbeddingsFastEmbed (BGE-M3)Local execution, CPU-optimized, no external API latency.RerankingBAAI/bge-reranker-baseStage-2 CrossEncoder to maximize top-k retrieval precision.IngestionDoclingSuperior handling of complex PDFs, tables, and OCR compared to PyPDF.State / MemoryRedisHigh-speed, persistent key-value store for LangGraph thread checkpoints.TelemetryArize Phoenix + PostgreSQLOpenTelemetry standard, persistent trace storage across container restarts.EvaluationDeepEvalLLM-as-a-judge metric scoring (Faithfulness, Answer Relevance).FrontendStreamlitRapid prototyping, native chat UI components, Python-native.🚀 Quick Start & DeploymentPrerequisitesPython 3.10+ (recommended: 3.11)Docker Desktop (with Docker Compose)Ollama (running locally with llama3.1:8b pulled)1. Start InfrastructureBoot up the required databases and telemetry services.Bashdocker-compose up -d
+Services Running:Qdrant: localhost:6333Phoenix UI: localhost:6006RedisInsight: localhost:8001PostgreSQL: localhost:54322. Environment SetupBashpython -m venv .venv
+source .venv/bin/activate  # On Windows: .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-4) Pull local model in Ollama
-Bash
-ollama pull llama3.1:8b
-5) Start infrastructure services
-Bash
-docker-compose up -d
-Services Running:
-
-Qdrant: http://localhost:6333
-
-Phoenix UI (Tracing): http://localhost:6006
-
-RedisInsight UI: http://localhost:8001
-
-Redis (State): localhost:6379
-
-PostgreSQL (Telemetry): localhost:5432
-
-6) Start backend API
-Bash
-python app/main.py
-Backend URLs:
-
-API base: http://localhost:8080
-
-Swagger: http://localhost:8080/docs
-
-7) Start Streamlit frontend (new terminal, same venv)
-Bash
-streamlit run frontend/streamlit_app.py
-Frontend URL:
-
-http://localhost:8501
-
-Environment and Configuration
-This project currently reads key settings from environment variables in code defaults.
-If you want custom behavior, set these before startup:
-
-QDRANT_HOST (default: localhost)
-
-QDRANT_PORT (default: 6333)
-
-COLLECTION_NAME (default: pdf_docs)
-
-EMBED_MODEL (default: BAAI/bge-m3)
-
-No .env file is required by default, but python-dotenv loading is supported in app/database.py.
-
-API Reference
-1) Ingest Document
-POST /v2/ingest/file
-
-Request:
-
-JSON
-{
+3. Start Application ServicesStart the FastAPI backend (Terminal 1):Bashpython app/main.py
+Start the Streamlit UI (Terminal 2):Bashstreamlit run frontend/streamlit_app.py
+📡 API Reference1. Ingest Document (Tenant Secured)POST /v2/ingest/fileJSON{
   "file_path": "C:/absolute/path/to/document.pdf",
-  "metadata": {
-    "category": "resume"
-  }
+  "metadata": { "category": "resume" },
+  "tenant_id": "tenant_a"
 }
-Response:
-
-JSON
-{
-  "status": "success",
-  "chunks_indexed": 42
-}
-2) Chat with Agent
-POST /v2/agent/chat
-
-Request:
-
-JSON
-{
+2. Chat with Agent (Tenant Secured)POST /v2/agent/chatJSON{
   "question": "Tell me the education details from the resume",
+  "tenant_id": "tenant_a",
   "thread_id": "user_session_1"
 }
-Response is an SSE stream with token events (type: token) and a metadata event (type: metadata, includes sources).
-
-3) Retrieve Chat History
-GET /v2/agent/history/{thread_id}
-
-Returns reconstructed user/assistant messages from Redis checkpoints, allowing frontend clients to seamlessly restore context on reload.
-
-Project Structure
-app/main.py - FastAPI app, SSE streaming, background eval, history endpoint (with Reranker pre-warming)
-
-app/graph.py - LangGraph topology and routing edges
-
-app/nodes.py - Condensation, supervisor, retrieval, grading, generation, summarization, and fallback
-
-app/schemas.py - API/state schemas and structured output contracts
-
-app/engine.py - Docling ingestion and Qdrant/BGE-Reranker logic
-
-app/database.py - Qdrant client initialization and collection checks
-
-app/evaluator.py - DeepEval faithfulness logic
-
-app/observability.py - Phoenix/OpenTelemetry instrumentation
-
-app/llm.py - Ollama model configuration
-
-frontend/streamlit_app.py - Streamlit client, history restoration, and stream rendering
-
-docker-compose.yml - Qdrant, Redis, RedisInsight, PostgreSQL, Phoenix services
-
-Troubleshooting
-Streamlit shows blank response for some turns
-Ensure backend emits fallback token from final state when no model stream is produced.
-
-Confirm /v2/agent/chat stream includes token and metadata events.
-
-Document exists but answer says "not found"
-Verify the document doesn't contain heavy placeholder text (e.g., Lorem Ipsum) which may trigger Grader rejection.
-
-Test with a fresh thread_id.
-
-First request takes 1-2 minutes locally
-Ensure the BGE-Reranker pre-warming logic in main.py is executing successfully during server startup.
-
-Redis history appears stale / UI resets on reload
-Ensure streamlit_app.py makes a GET request to the history endpoint upon initialization.
-
-If migrating environments, ensure your Docker volume (redis_data) mapped correctly. Switch to a new thread_id for clean tests.
-
-Development Notes
-This repo is intentionally built as a modular platform for future autonomous workflows.
+Returns an SSE stream yielding type: token and type: metadata events.3. Retrieve Checkpointed HistoryGET /v2/agent/history/{thread_id}Time-travels through Redis to reconstruct the full UI history based on the thread ID.Developed for advanced autonomous AI engineering workflows.
+```

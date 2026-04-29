@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
 
 # --- 2. FastAPI Setup ---
 app = FastAPI(
-    title="Phase 3: Agentic RAG (Background Eval)",
+    title="Phase 3: Agentic RAG (Background Eval) + Multi-Tenancy",
     description="Senior Software Engineer - AI Initiative",
     lifespan=lifespan
 )
@@ -68,8 +68,13 @@ async def ingest_file(payload: StorePayload, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=404, detail="File path not found.")
     
     try:
-        count = process_file(payload.file_path, payload.metadata)
-        return {"status": "success", "chunks_indexed": count}
+        # FIX: Pass the tenant_id from the payload down to the engine
+        count = process_file(
+            file_path=payload.file_path, 
+            metadata=payload.metadata, 
+            tenant_id=payload.tenant_id
+        )
+        return {"status": "success", "chunks_indexed": count, "tenant_id": payload.tenant_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
 
@@ -81,8 +86,10 @@ async def chat_endpoint(payload: ChatPayload, background_tasks: BackgroundTasks)
     thread_id = payload.thread_id or "default_session_1"
     config = cast(RunnableConfig, {"configurable": {"thread_id": thread_id}})
     
+    # FIX: Inject tenant_id into the GraphState
     inputs = cast(GraphState, {
         "question": payload.question,
+        "tenant_id": payload.tenant_id,  # <-- NEW: State injection
         "search_query": "",      
         "iteration_count": 0,
         "response": "",  
@@ -107,8 +114,7 @@ async def chat_endpoint(payload: ChatPayload, background_tasks: BackgroundTasks)
                 current_node = event.get("metadata", {}).get("langgraph_node")
                 
                 # ONLY stream if the event is a stream AND the node is your generator
-                # Note: Change "generate" to whatever you named your final node in graph.py!
-                if event["event"] == "on_chat_model_stream" and current_node == "generate":
+                if event["event"] == "on_chat_model_stream" and current_node == "generate_answer": # NOTE: Make sure "generate_answer" matches the node name in graph.py
                     
                     chunk_obj = event["data"].get("chunk")
                     
@@ -145,6 +151,7 @@ async def chat_endpoint(payload: ChatPayload, background_tasks: BackgroundTasks)
 
     # Return the stream instead of a static JSON dictionary
     return StreamingResponse(stream_generator(), media_type="text/event-stream")
+
 # 🚨 UPGRADED ENDPOINT FOR STREAMLIT 🚨
 @app.get("/v2/agent/history/{thread_id}")
 async def get_history(thread_id: str):

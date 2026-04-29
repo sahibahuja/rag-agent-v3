@@ -12,7 +12,7 @@ langchain-ollama
 
 # --- Document Ingestion ---
 docling
-
+PyMuPDF
 # --- Vector Database & Embeddings ---
 qdrant-client
 fastembed
@@ -31,3 +31,10 @@ langgraph-checkpoint-redis
 # front end
 streamlit
 requests
+
+#tracing
+arize-phoenix 
+arize-phoenix-otel
+
+# graphifyy
+graphifyy

@@ -9,6 +9,7 @@ class StorePayload(BaseModel):
     """Payload for indexing new documents via Docling"""
     file_path: str = Field(..., description="Absolute path to the Document/File")
     metadata: Dict[str, str] = Field(default_factory=dict, description="Additional tags for Qdrant")
+    tenant_id: str = Field(..., description="Unique identifier for the tenant/user")
 
 class Message(BaseModel):
     """Standard message format for history (OpenAI compatible)"""
@@ -20,8 +21,9 @@ class Message(BaseModel):
 class ChatPayload(BaseModel):
     """Payload for the Agentic Chat endpoint"""
     question: str
+    tenant_id: str = Field(..., description="Unique ID to ensure data isolation") # Make sure this line exists!
     thread_id: Optional[str] = Field(None, description="Unique ID for session persistence in Redis")
-
+    
 class ChatResponse(BaseModel):
     """Structured response for the final API output"""
     answer: str
@@ -52,7 +54,8 @@ class FaithfulnessSchema(BaseModel):
 
 class GraphState(TypedDict):
     question: str              # Original user input (Sacred)
-    search_query: str          # Optimized search keywords
+    search_query: str 
+    tenant_id: str         # Optimized search keywords
     iteration_count: int
     history: Annotated[list, operator.add]
     context: NotRequired[List[str]]

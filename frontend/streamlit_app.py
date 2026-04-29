@@ -10,20 +10,30 @@ st.set_page_config(page_title="Phase 3: Agentic UI", layout="wide")
 # --- Sidebar: Thread ID Selection ---
 with st.sidebar:
     st.title("⚙️ Session Management")
-    st.markdown("Change the ID below to switch conversations or start a new one.")
+    st.markdown("Change the IDs below to switch conversations or tenants.")
+    
+    # 🚨 THE TENANT SELECTOR (Multi-Tenancy Point 6) 🚨
+    selected_tenant_id = st.text_input("🏢 Tenant ID (Security Isolation):", value="tenant_a")
     
     # 🚨 THE THREAD SELECTOR 🚨
-    selected_thread_id = st.text_input("Active Thread ID:", value="default_user_1")
+    selected_thread_id = st.text_input("💬 Active Thread ID:", value="default_user_1")
     
     st.divider()
     
     st.title("📂 Document Ingestion")
     uploaded_file = st.text_input("Enter absolute Document path to ingest:")
     if st.button("Process Document"):
-        with st.spinner("Chunking and Vectorizing..."):
-            res = requests.post(f"{FASTAPI_BASE_URL}/v2/ingest/file", json={"file_path": uploaded_file})
+        with st.spinner(f"Ingesting into Qdrant under {selected_tenant_id}..."):
+            # FIX: Send the tenant_id to the ingestion endpoint
+            res = requests.post(
+                f"{FASTAPI_BASE_URL}/v2/ingest/file", 
+                json={
+                    "file_path": uploaded_file,
+                    "tenant_id": selected_tenant_id # <-- SECURE INGESTION
+                }
+            )
             if res.status_code == 200:
-                st.success("Document ingested into Qdrant!")
+                st.success(f"Document ingested for {selected_tenant_id}!")
             else:
                 st.error(f"Failed: {res.text}")
 
@@ -44,7 +54,8 @@ if "current_thread_id" not in st.session_state or st.session_state.current_threa
         st.warning("Could not connect to backend to fetch history.")
 
 # --- Main Chat UI ---
-st.title(f"🤖 RAG Agent (Session: `{selected_thread_id}`)")
+st.title(f"🤖 Multi-Tenant RAG Agent")
+st.caption(f"🔒 Authenticated as: `{selected_tenant_id}` | 💬 Session: `{selected_thread_id}`")
 
 # Draw the chat history on the screen
 # 🚨 THE FIX: Use enumerate to track the index (i) for unique button keys
@@ -97,7 +108,12 @@ if prompt := st.chat_input("Ask a question about your documents..."):
         full_response = ""
         sources = []
         
-        payload = {"question": prompt, "thread_id": selected_thread_id}
+        # FIX: Send the tenant_id in the chat payload
+        payload = {
+            "question": prompt, 
+            "thread_id": selected_thread_id,
+            "tenant_id": selected_tenant_id # <-- SECURE RETRIEVAL
+        }
         
         # Open a streaming connection to FastAPI
         with requests.post(f"{FASTAPI_BASE_URL}/v2/agent/chat", json=payload, stream=True) as response:

@@ -1,15 +1,17 @@
 import os
 import fitz
 import tempfile
-from typing import List, Tuple, Dict  # Added Dict for typing
-from docling.document_converter import DocumentConverter, PdfFormatOption, FormatOption # Added FormatOption
+from typing import List, Tuple, Dict  
+from docling.document_converter import DocumentConverter, PdfFormatOption, FormatOption 
 from docling.datamodel.pipeline_options import PdfPipelineOptions
-# FIX 1: Correct Import Path for AcceleratorOptions
 from docling.datamodel.accelerator_options import AcceleratorOptions 
 from docling.datamodel.base_models import InputFormat
-from app.database import get_client, COLLECTION_NAME
+import uuid
+from app.database import get_client, COLLECTION_NAME, PARENT_COLLECTION_NAME
 from sentence_transformers import CrossEncoder
 
+# NEW IMPORT: Needed for the Multi-Tenancy filtering
+from qdrant_client.http import models 
 
 _reranker = None
 
@@ -36,7 +38,8 @@ def rerank_results(query: str, results: list, top_k: int = 4):
         print(f"⚠️ Reranker failed, using original order: {e}")
         return results[:top_k]
 
-def process_file(file_path: str, metadata: dict) -> int:
+# FIX: Added tenant_id as a required parameter to enforce security at ingestion
+def process_file(file_path: str, metadata: dict, tenant_id: str) -> int:
     file_ext = os.path.splitext(file_path)[1].lower()
     full_markdown = ""
     
@@ -48,8 +51,6 @@ def process_file(file_path: str, metadata: dict) -> int:
     pipeline_options.do_table_structure = True
     pipeline_options.ocr_options.force_full_page_ocr = False 
     
-    # FIX 2: Explicitly type the dictionary as the base class 'FormatOption' 
-    # to satisfy Pylance's invariance check.
     format_options: Dict[InputFormat, FormatOption] = {
         InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
     }
@@ -84,29 +85,88 @@ def process_file(file_path: str, metadata: dict) -> int:
         result = converter.convert(file_path)
         full_markdown = result.document.export_to_markdown()
 
-    # Chunking & Ingestion
-    chunks = [full_markdown[i:i+1500] for i in range(0, len(full_markdown), 1200)]
-    q_client = get_client()
-    metadata_list = [{"source": file_path, **metadata} for _ in range(len(chunks))]
+    # --- Parent-Child Chunking Strategy ---
+    parent_size = 3000 
+    parent_overlap = 500
+    parent_chunks = [full_markdown[i:i+parent_size] for i in range(0, len(full_markdown), parent_size - parent_overlap)]
     
+    q_client = get_client()
+    child_chunks = []
+    child_metadata = []
+    
+    parent_storage_ids = []
+    parent_storage_payloads = []
+
+    for p_text in parent_chunks:
+        parent_id = str(uuid.uuid4())
+        
+        # 2. Store Parent with tenant_id
+        parent_storage_ids.append(parent_id)
+        parent_storage_payloads.append({
+            "text": p_text,
+            "source": file_path,
+            "tenant_id": tenant_id,  # <-- SECURE ISOLATION
+            **metadata
+        })
+
+        # 3. Generate Child Chunks
+        child_size = 600 
+        child_overlap = 100
+        p_children = [p_text[j:j+child_size] for j in range(0, len(p_text), child_size - child_overlap)]
+        
+        for c_text in p_children:
+            child_chunks.append(c_text)
+            child_metadata.append({
+                "source": file_path,
+                "parent_id": parent_id,
+                "tenant_id": tenant_id,  # <-- SECURE ISOLATION
+                **metadata
+            })
+
+    # 4. Batch Upload Parents
+    from qdrant_client.http.models import PointStruct
+    q_client.upsert(
+        collection_name=PARENT_COLLECTION_NAME,
+        points=[
+            PointStruct(
+                id=pid,
+                vector={}, # No vector for parent
+                payload=payload
+            ) for pid, payload in zip(parent_storage_ids, parent_storage_payloads)
+        ]
+    )
+
+    # 5. Batch Upload Children
     q_client.add(
         collection_name=COLLECTION_NAME,
-        documents=chunks,
-        metadata=metadata_list
+        documents=child_chunks,
+        metadata=child_metadata
     )
     
-    return len(chunks)
+    return len(child_chunks)
 
 # --- 2. Retrieval Logic (The "Search Engine") ---
 
-def get_context_from_qdrant(queries: List[str], limit: int = 10) -> Tuple[str, List[str]]:
+# FIX: Added tenant_id to signature
+def get_context_from_qdrant(queries: List[str], tenant_id: str, limit: int = 10) -> Tuple[str, List[str]]:
     q_client = get_client()
     all_results = []
+
+    # --- THE SECURITY WALL (Point 6) ---
+    tenant_filter = models.Filter(
+        must=[
+            models.FieldCondition(
+                key="tenant_id",
+                match=models.MatchValue(value=tenant_id),
+            )
+        ]
+    )
 
     for q in queries:
         res = q_client.query(
             collection_name=COLLECTION_NAME,
             query_text=q,
+            query_filter=tenant_filter, # <-- APPLIED FILTER HERE
             limit=limit
         )
         all_results.extend(res)
@@ -127,9 +187,30 @@ def get_context_from_qdrant(queries: List[str], limit: int = 10) -> Tuple[str, L
     context_parts = []
     sources = []
 
+    # --- Auto-Merging: Fetch Parent Text ---
     for r in reranked:
-        content = r.document or ""
-        source = (r.metadata or {}).get("source", "Unknown Path")
+        metadata = r.metadata or {}
+        parent_id = metadata.get("parent_id")
+        source = metadata.get("source", "Unknown Path")
+        
+        if parent_id:
+            try:
+                # We can also add tenant filtering here, but since parent_id is UUID 
+                # and came from a tenant-filtered child, it's inherently secure.
+                parent_docs = q_client.retrieve(
+                    collection_name=PARENT_COLLECTION_NAME,
+                    ids=[parent_id]
+                )
+                if parent_docs and parent_docs[0].payload:
+                    content = parent_docs[0].payload.get("text", r.document or "")
+                else:
+                    content = r.document or ""
+            except Exception as e:
+                print(f"⚠️ Failed to fetch parent {parent_id}: {e}")
+                content = r.document or ""
+        else:
+            content = r.document or ""
+
         context_parts.append(f"[Source: {source}]\n{content}")
         if source not in sources:
             sources.append(source)

@@ -4,7 +4,6 @@ from app.engine import get_context_from_qdrant
 from app.schemas import GraphState, RouteQuery, GradeSchema, SupervisorRoute, CondensedQuery
 
 # --- 1. The Router Node (PILLAR 1) ---
-# --- 1. The Router Node ---
 def route_question(state: GraphState):
     print("--- NODE: ROUTING QUESTION ---")
     question = state.get("question", "")
@@ -30,6 +29,14 @@ def retrieve_docs(state: GraphState):
     print("--- NODE: RETRIEVING FROM QDRANT ---")
     search_query = state.get("search_query") or state.get("question", "")
     
+    # FIX: Extract the tenant_id from the state
+    tenant_id = state.get("tenant_id")
+    if not tenant_id:
+        print("⚠️ CRITICAL ERROR: No tenant_id found in GraphState. Retrieval will fail.")
+        # We could raise an error here, but for safety we'll pass an empty string
+        # which Qdrant will filter out (returning 0 docs), preventing data leaks.
+        tenant_id = "" 
+    
     # Pillar 4: Generate 1 alternative query to save time
     system_msg = "Generate 1 alternative search query. Output ONLY the query text."
     response = llm.invoke([
@@ -39,8 +46,8 @@ def retrieve_docs(state: GraphState):
     
     queries = [search_query, str(response.content).strip()]
     
-    # 🚨 KEPT: Your source-tracking engine call
-    context_str, sources = get_context_from_qdrant(queries, limit=10)
+    # FIX: Pass tenant_id to the retrieval engine
+    context_str, sources = get_context_from_qdrant(queries, tenant_id=tenant_id, limit=10)
     
     return {"context": [context_str], "sources": sources}
 
@@ -142,7 +149,6 @@ def generate_answer(state: GraphState):
     }
 
 # ---7. Supervisor Node
-# Replace this in app/nodes.py
 def supervisor_route(state: GraphState):
     print("--- NODE: SUPERVISOR ROUTING (POLICY BASED) ---")
 
@@ -209,6 +215,7 @@ def supervisor_route(state: GraphState):
             "next_active_agent": "document_agent",
             "routing_reason": "fallback_on_error",
         }
+        
 # 8. returns safe value for graph conditional edges.
 def pick_active_agent(state: GraphState):
     target = state.get("next_active_agent", "document_agent")
@@ -248,6 +255,7 @@ def conversational_agent(state: GraphState):
         "sources": [],
         "history": [f"User: {question}", f"AI: {answer_text}"]
     }
+    
 # 9. Condense Query
 def condense_query(state: GraphState):
     print("--- NODE: CONDENSING QUERY (UNIVERSAL) ---")
@@ -299,7 +307,9 @@ def condense_query(state: GraphState):
 
     except Exception as e:
         print(f"⚠️ Condense failed: {e}")
-        return {"search_query": question}#10 
+        return {"search_query": question}
+
+#10 
 def no_context_fallback(state: GraphState):
     print("--- NODE: NO CONTEXT FALLBACK ---")
     question = state.get("question", "")
@@ -315,6 +325,7 @@ def no_context_fallback(state: GraphState):
         ],
         "no_context_fallback": True
     }
+    
 #11. History Sumary Node
 def summarize_memory(state: GraphState):
     print("--- NODE: SUMMARIZING MEMORY ---")
