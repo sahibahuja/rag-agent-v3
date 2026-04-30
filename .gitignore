@@ -25,3 +25,4 @@ qdrant_storage/
 .deepeval/
 redis_data/
 postgres_data/
+graphify-out/
