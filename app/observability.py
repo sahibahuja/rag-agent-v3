@@ -8,11 +8,11 @@ def setup_tracing():
     # then we've already set up Phoenix.
     if not isinstance(trace.get_tracer_provider(), trace.ProxyTracerProvider):
         return 
-
+    collector_endpoint = os.getenv("PHOENIX_COLLECTOR_ENDPOINT", "http://localhost:6006/v1/traces")
     # 2. Use the HTTP endpoint (Port 6006) for maximum stability on Windows/Docker
     tracer_provider = register(
         project_name="rag-agent-v3",
-        endpoint="http://localhost:6006/v1/traces",
+        endpoint=collector_endpoint,
     )
 
     # 3. Instrument LangChain

@@ -4,7 +4,7 @@ import requests
 import json
 
 # --- Configuration ---
-FASTAPI_BASE_URL = "http://localhost:8080"
+FASTAPI_BASE_URL = os.getenv("API_URL", "http://localhost:8080")
 st.set_page_config(page_title="Phase 3: Agentic UI", layout="wide")
 
 # --- Sidebar: Thread ID Selection ---
@@ -69,16 +69,11 @@ for i, msg in enumerate(st.session_state.messages):
             unique_sources = list(set(msg["sources"]))
             
             for source_path in unique_sources:
-                if os.path.exists(source_path):
-                    with open(source_path, "rb") as file:
-                        st.download_button(
-                            label=f"📄 Download {os.path.basename(source_path)}",
-                            data=file,
-                            file_name=os.path.basename(source_path),
-                            key=f"dl_{i}_{os.path.basename(source_path)}" # 🚨 CRITICAL: Unique key prevents Streamlit crash!
-                        )
-                else:
-                    st.caption(f"📁 Source: {os.path.basename(source_path)} (File unavailable)")
+            # Just grab the last part of the path/URL to make the link look clean
+                display_name = os.path.basename(source_path) 
+
+                # Force it into a clickable Markdown link using the exact source provided
+                st.markdown(f"🔗 {source_path}")
 
 # --- Chat Input ---
 if prompt := st.chat_input("Ask a question about your documents..."):

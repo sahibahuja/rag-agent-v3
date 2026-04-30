@@ -101,7 +101,7 @@ async def chat_endpoint(payload: ChatPayload, background_tasks: BackgroundTasks)
 
     # 🚨 THE STREAMING GENERATOR 🚨
     async def stream_generator():
-        redis_uri = "redis://localhost:6379"
+        redis_uri = os.getenv("REDIS_URI", "redis://localhost:6379")
         full_answer = ""
         final_state = None
         
@@ -164,7 +164,7 @@ async def get_history(thread_id: str):
     from langchain_core.runnables import RunnableConfig
     from typing import cast
     
-    redis_uri = "redis://localhost:6379"
+    redis_uri = os.getenv("REDIS_URI", "redis://localhost:6379")
     config = cast(RunnableConfig, {"configurable": {"thread_id": thread_id}})
     
     async with AsyncRedisSaver.from_conn_string(redis_uri) as checkpointer:

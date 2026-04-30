@@ -9,10 +9,10 @@ load_dotenv()
 _client = None
 
 # CONFIGURATION
-COLLECTION_NAME = os.getenv("COLLECTION_NAME", "docs")
-PARENT_COLLECTION_NAME = os.getenv("PARENT_COLLECTION_NAME", "parent_docs")
+COLLECTION_NAME = os.getenv("COLLECTION_NAME", "agent_knowledge_2")
+PARENT_COLLECTION_NAME = os.getenv("PARENT_COLLECTION_NAME", "agent_knowledge_parents_2")
 # Standardizing names for Phase 3
-EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-m3") 
+EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-small-en-v1.5") 
 
 def get_client() -> QdrantClient:
     """

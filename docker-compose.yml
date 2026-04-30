@@ -1,7 +1,7 @@
 name: rag-agent-v3
 
 services:
-  # 1. Vector Database (Knowledge Base)
+  # --- VECTOR DATABASE ---
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant_v2
@@ -12,26 +12,26 @@ services:
       - ./qdrant_storage:/qdrant/storage
     restart: always
 
-  # 2. Stateful Memory (Conversation History)
+  # --- STATEFUL MEMORY ---
   redis:
     image: redis/redis-stack-server:latest
     container_name: agent_redis
     ports:
       - "6379:6379"
-    restart: unless-stopped
     volumes:
       - ./redis_data:/data
+    restart: unless-stopped
 
   redisinsight:
     image: redis/redisinsight:latest
     container_name: redisinsight
     ports:
-      - "8001:5540" # The UI will be available on port 8001
+      - "8001:5540" 
     depends_on:
-      - redis       # Make sure your main redis service is named 'redis'
+      - redis
     restart: unless-stopped
 
-  # --- NEW: Step 5 - Telemetry Persistence Database ---
+  # --- TELEMETRY STORAGE ---
   postgres:
     image: postgres:15-alpine
     container_name: phoenix_postgres
@@ -45,19 +45,54 @@ services:
       - ./postgres_data:/var/lib/postgresql/data
     restart: always
 
-  # 3. Observability & Tracing (Arize Phoenix)
+  # --- OBSERVABILITY (Arize Phoenix) ---
   phoenix:
     image: arizephoenix/phoenix:latest
     container_name: phoenix_v2
     ports:
-      - "6006:6006" # Dashboard UI
-      - "4319:4317" # OTLP Collector
+      - "6006:6006" 
+      - "4317:4317" 
     environment:
-      # Tell Phoenix to use Postgres instead of its temporary local memory!
       - PHOENIX_SQL_DATABASE_URL=postgresql://phoenix_user:phoenix_password@postgres:5432/phoenix_db
     depends_on:
       - postgres
     restart: always
+
+  # --- BACKEND API ---
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: rag_fastapi
+    ports:
+      - "8080:8080"
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - REDIS_URI=redis://redis:6379
+      - PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:4317
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    depends_on:
+      - qdrant
+      - redis
+      - phoenix
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # --- FRONTEND UI ---
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    container_name: rag_streamlit
+    ports:
+      - "8501:8501"
+    environment:
+      - API_URL=http://api:8080
+    depends_on:
+      - api
+    restart: unless-stopped
 
 networks:
   default:

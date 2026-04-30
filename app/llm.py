@@ -1,8 +1,12 @@
+import os
 from langchain_ollama import ChatOllama
 
-# Using Llama 3.2 as it's fast and smart for reasoning
+# If OLLAMA_BASE_URL is set (Docker), use it. 
+# Otherwise, default to localhost (Local Debugging).
+ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
 llm = ChatOllama(
     model="llama3.1:8b",
-    temperature=0, # Keep it deterministic for logic
-    base_url="http://localhost:11434"
+    temperature=0,
+    base_url=ollama_url
 )

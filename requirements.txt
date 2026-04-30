@@ -13,28 +13,23 @@ langchain-ollama
 # --- Document Ingestion ---
 docling
 PyMuPDF
+
 # --- Vector Database & Embeddings ---
 qdrant-client
 fastembed
 sentence-transformers
+
+# --- Session Persistence ---
+redis
+langgraph-checkpoint-redis
 
 # --- Evaluation & Observability ---
 deepeval
 opentelemetry-api
 opentelemetry-sdk
 openinference-instrumentation-langchain
-
-# --- Session Persistence ---
-redis
-langgraph-checkpoint-redis
-
-# front end
-streamlit
-requests
-
-#tracing
 arize-phoenix 
 arize-phoenix-otel
 
-# graphifyy
+# --- Graph ---
 graphifyy
